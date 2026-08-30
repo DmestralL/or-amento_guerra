@@ -5,3 +5,6 @@ coverage
 *.log
 .pnpm-store
 *.tsbuildinfo
+
+.vercel
+.env*
