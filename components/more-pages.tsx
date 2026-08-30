@@ -5,7 +5,7 @@ import {ArrowLeft,FileJson,FileSpreadsheet,Mail,ShieldCheck,Target,Users} from "
 import {brl,monthStatus} from "@/lib/format";
 import {createClient} from "@/lib/supabase/client";
 
-export type SharedTx={id:string,type:"expense"|"income",amount:number,category:string,description:string,person:string,planned:boolean,date:string};
+export type SharedTx={id:string,type:"expense"|"income"|"transfer"|"debt_payment",amount:number,category:string,description:string,person:string,planned:boolean,date:string};
 export type Member={id:string,name:string,email:string,role:string};
 const REPORT_NOW=Date.parse("2026-09-09T12:00:00Z");
 
