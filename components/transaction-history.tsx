@@ -4,7 +4,7 @@ import {useMemo,useState} from "react";
 import {ArrowLeft,Pencil,Search,Trash2} from "lucide-react";
 import {brl} from "@/lib/format";
 
-export type TransactionItem={id:string,type:"expense"|"income"|"transfer"|"debt_payment",amount:number,category:string,description:string,person:string,planned:boolean,date:string};
+export type TransactionItem={id:string,type:"expense"|"income"|"transfer"|"debt_payment",amount:number,category:string,description:string,person:string,planned:boolean,date:string,cardId?:string,cardName?:string};
 
 const typeLabel={expense:"Despesa",income:"Receita",transfer:"Transferência",debt_payment:"Pagamento de dívida"};
 
