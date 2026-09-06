@@ -1,0 +1,1 @@
+Arquivo temporário criado durante reconciliação. Pode ser removido depois.
