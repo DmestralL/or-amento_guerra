@@ -22,6 +22,28 @@ export function accountBalance(
 export function availableReal(balance: number, protectedAmount: number) {
   return balance - protectedAmount;
 }
+export type ProtectedBalance = {
+  amount: number;
+  includedInAccountBalance: boolean;
+};
+export function financialPosition(
+  accountBalanceValue: number,
+  protectedFunds: ProtectedBalance[],
+) {
+  const protectedTotal = protectedFunds.reduce(
+    (sum, fund) => sum + fund.amount,
+    0,
+  );
+  const included = protectedFunds
+    .filter((fund) => fund.includedInAccountBalance)
+    .reduce((sum, fund) => sum + fund.amount, 0);
+  return {
+    accountBalance: accountBalanceValue,
+    protectedTotal,
+    available: accountBalanceValue - included,
+    patrimony: accountBalanceValue + protectedTotal - included,
+  };
+}
 export function budgetSpent(movements: FinancialMovement[], month: string) {
   return movements
     .filter(

@@ -4,6 +4,7 @@ import {
   availableReal,
   budgetSpent,
   cashForecast,
+  financialPosition,
   type FinancialMovement,
 } from "./financial-calculations";
 const cash = (over: Partial<FinancialMovement>): FinancialMovement => ({
@@ -58,5 +59,22 @@ describe("saldo real e competência", () => {
     expect(
       cashForecast(1000, [], [{ amount: 867.18, status: "received" }]),
     ).toBeCloseTo(1867.18);
+  });
+  it("reproduz o Nubank sem subtrair caixinhas separadas duas vezes", () => {
+    const position = financialPosition(2821.6, [
+      { amount: 3300, includedInAccountBalance: false },
+      { amount: 1284.76, includedInAccountBalance: false },
+      { amount: 10.92, includedInAccountBalance: false },
+    ]);
+    expect(position.available).toBeCloseTo(2821.6);
+    expect(position.protectedTotal).toBeCloseTo(4595.68);
+    expect(position.patrimony).toBeCloseTo(7417.28);
+  });
+  it("subtrai somente valores ainda incluídos no saldo da conta", () => {
+    expect(
+      financialPosition(5000, [
+        { amount: 1000, includedInAccountBalance: true },
+      ]).available,
+    ).toBe(4000);
   });
 });

@@ -13,7 +13,10 @@ import {
 import { brl } from "@/lib/format";
 import { createClient } from "@/lib/supabase/client";
 import type { TransactionItem } from "@/components/transaction-history";
-import { accountBalance, availableReal } from "@/lib/financial-calculations";
+import {
+  accountBalance,
+  financialPosition,
+} from "@/lib/financial-calculations";
 
 export type AccountItem = {
   id: string;
@@ -36,6 +39,7 @@ type ProtectedFund = {
   name: string;
   amount: number;
   protectedUntil: string | null;
+  includedInAccountBalance: boolean;
 };
 const labels: Record<string, string> = {
   checking: "Conta corrente",
@@ -61,6 +65,8 @@ export function WalletAccounts({
     [funds, setFunds] = useState<ProtectedFund[]>([]),
     [editing, setEditing] = useState<AccountItem | null>(null),
     [adding, setAdding] = useState(false),
+    [reportedBalance, setReportedBalance] = useState(""),
+    [reconciling, setReconciling] = useState(false),
     [message, setMessage] = useState("");
   const load = useCallback(async () => {
     if (!householdId) return;
@@ -75,7 +81,7 @@ export function WalletAccounts({
         .order("created_at"),
       sb
         .from("protected_funds")
-        .select("id,name,amount,protected_until")
+        .select("id,name,amount,protected_until,included_in_account_balance")
         .eq("household_id", householdId)
         .eq("active", true)
         .order("created_at"),
@@ -100,6 +106,7 @@ export function WalletAccounts({
         name: x.name,
         amount: Number(x.amount),
         protectedUntil: x.protected_until,
+        includedInAccountBalance: x.included_in_account_balance,
       })),
     );
   }, [householdId]);
@@ -163,15 +170,16 @@ export function WalletAccounts({
         t.affectsBudget ?? (t.type === "expense" || t.type === "debt_payment"),
     }));
     const balance = accountBalance(opening, movements);
-    const protectedTotal = funds.reduce((s, x) => s + x.amount, 0);
+    const position = financialPosition(balance, funds);
     return {
       opening,
       income,
       out,
       card,
       balance,
-      protectedTotal,
-      real: availableReal(balance, protectedTotal),
+      protectedTotal: position.protectedTotal,
+      real: position.available,
+      patrimony: position.patrimony,
     };
   }, [accounts, funds, txs]);
   async function editFund(fund?: ProtectedFund) {
@@ -204,6 +212,8 @@ export function WalletAccounts({
           amount,
           active: true,
           value_status: "confirmed",
+          included_in_account_balance: false,
+          source_account_id: accounts.find((x) => x.available)?.id ?? null,
           created_by: user?.id,
         });
     setMessage(
@@ -212,6 +222,27 @@ export function WalletAccounts({
         : "Dinheiro protegido atualizado sem registrar despesa.",
     );
     if (!result.error) await load();
+  }
+  async function reconcile() {
+    const reported = parseMoney(reportedBalance),
+      account = accounts.find((x) => x.available);
+    if (!account || !Number.isFinite(reported) || reported < 0) {
+      setMessage("Informe um saldo bancário válido.");
+      return;
+    }
+    setReconciling(true);
+    const { error } = await createClient().rpc("reconcile_account_balance", {
+      target_account_id: account.id,
+      reported_balance: reported,
+    });
+    setReconciling(false);
+    if (error) {
+      setMessage(error.message);
+      return;
+    }
+    setReportedBalance("");
+    setMessage("Saldo-base reconciliado sem criar receita ou despesa.");
+    await load();
   }
   async function remove(account: AccountItem) {
     if (!confirm(`Excluir ${account.name}?`)) return;
@@ -268,11 +299,50 @@ export function WalletAccounts({
             </b>
           </span>
           <span>
-            Compras cartão
+            Patrimônio total
             <br />
-            <b className="money text-base">{brl(totals.card)}</b>
+            <b className="money text-base">{brl(totals.patrimony)}</b>
           </span>
         </div>
+      </section>
+      <section className="card p-5">
+        <p className="label">Reconciliação bancária</p>
+        <h3 className="text-xl font-black">Conferir com o banco</h3>
+        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+          <div className="rounded-xl bg-cream p-3">
+            <small>Calculado no app</small>
+            <b className="money block">{brl(totals.balance)}</b>
+          </div>
+          <label className="rounded-xl border p-3">
+            <small>Saldo informado pelo banco</small>
+            <input
+              inputMode="decimal"
+              value={reportedBalance}
+              onChange={(e) => setReportedBalance(e.target.value)}
+              placeholder="0,00"
+              className="money mt-1 w-full bg-transparent text-lg font-black outline-none"
+            />
+          </label>
+          <div className="rounded-xl bg-cream p-3">
+            <small>Diferença</small>
+            <b className="money block">
+              {reportedBalance && Number.isFinite(parseMoney(reportedBalance))
+                ? brl(parseMoney(reportedBalance) - totals.balance)
+                : "—"}
+            </b>
+          </div>
+        </div>
+        <button
+          disabled={reconciling || !reportedBalance}
+          onClick={() => void reconcile()}
+          className="tap mt-3 w-full rounded-xl bg-ink p-3 font-bold text-white disabled:opacity-40"
+        >
+          {reconciling ? "Reconciliando…" : "Ajustar saldo-base"}
+        </button>
+        <p className="mt-2 text-xs text-ink/55">
+          O ajuste corrige a base da conta e fica no histórico. Não cria receita
+          nem despesa.
+        </p>
       </section>
       <section className="card p-5">
         <div className="flex items-center justify-between">
@@ -297,7 +367,10 @@ export function WalletAccounts({
               <span>
                 <b>{fund.name}</b>
                 <small className="block text-ink/55">
-                  Não é despesa
+                  Não é despesa ·{" "}
+                  {fund.includedInAccountBalance
+                    ? "incluída no saldo da conta"
+                    : "já separada do saldo da conta"}
                   {fund.protectedUntil
                     ? ` · protegido até ${new Date(`${fund.protectedUntil}T12:00:00`).toLocaleDateString("pt-BR")}`
                     : ""}

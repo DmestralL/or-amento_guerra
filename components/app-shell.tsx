@@ -40,8 +40,8 @@ import { FinancialCalendar } from "@/components/financial-calendar";
 import { WalletAccounts, type AccountItem } from "@/components/wallet-accounts";
 import {
   accountBalance,
-  availableReal,
   budgetSpent,
+  financialPosition,
 } from "@/lib/financial-calculations";
 
 type Tx = TransactionItem;
@@ -64,13 +64,14 @@ type ProtectedFund = {
   name: string;
   amount: number;
   protectedUntil: string | null;
+  includedInAccountBalance: boolean;
 };
 type UpcomingItem = {
   id: string;
   title: string;
   amount: number | null;
   date: string;
-  kind: "bill" | "income";
+  kind: "bill" | "income" | "event";
   status: string;
 };
 type DbMember = {
@@ -119,6 +120,7 @@ export function AppShell() {
     [accounts, setAccounts] = useState<AccountItem[]>([]),
     [protectedFunds, setProtectedFunds] = useState<ProtectedFund[]>([]),
     [upcoming, setUpcoming] = useState<UpcomingItem[]>([]),
+    [pendingCommitments, setPendingCommitments] = useState(0),
     [warStart, setWarStart] = useState(""),
     [warDays, setWarDays] = useState(90),
     [categoryNames, setCategoryNames] = useState(
@@ -353,12 +355,14 @@ export function AppShell() {
         await Promise.all([
           sb
             .from("protected_funds")
-            .select("id,name,amount,protected_until")
+            .select(
+              "id,name,amount,protected_until,included_in_account_balance",
+            )
             .eq("household_id", householdId)
             .eq("active", true),
           sb
             .from("financial_events")
-            .select("id,title,amount,starts_on,status")
+            .select("id,title,amount,starts_on,status,event_type")
             .eq("household_id", householdId)
             .eq("status", "planned")
             .order("starts_on"),
@@ -375,6 +379,7 @@ export function AppShell() {
           name: x.name,
           amount: Number(x.amount),
           protectedUntil: x.protected_until,
+          includedInAccountBalance: x.included_in_account_balance,
         })),
       );
       setUpcoming(
@@ -384,7 +389,9 @@ export function AppShell() {
             title: x.title,
             amount: x.amount == null ? null : Number(x.amount),
             date: x.starts_on,
-            kind: "bill" as const,
+            kind: (x.event_type === "bill_due" || x.event_type === "expense"
+              ? "bill"
+              : "event") as "bill" | "event",
             status: x.status,
           })),
           ...(incomes ?? []).map((x) => ({
@@ -398,6 +405,13 @@ export function AppShell() {
         ]
           .sort((a, b) => a.date.localeCompare(b.date))
           .slice(0, 8),
+      );
+      setPendingCommitments(
+        (events ?? [])
+          .filter(
+            (x) => x.event_type === "bill_due" || x.event_type === "expense",
+          )
+          .reduce((sum, x) => sum + Number(x.amount ?? 0), 0),
       );
     }
     queueMicrotask(() => void loadPlanning());
@@ -459,8 +473,10 @@ export function AppShell() {
       .filter((a) => a.available)
       .reduce((sum, a) => sum + a.openingBalance, 0),
     balance = accountBalance(opening, movements),
-    protectedTotal = protectedFunds.reduce((sum, fund) => sum + fund.amount, 0),
-    real = availableReal(balance, protectedTotal);
+    position = financialPosition(balance, protectedFunds),
+    protectedTotal = position.protectedTotal,
+    real = position.available,
+    patrimony = position.patrimony;
   const save = async (tx: Tx) => {
     if (savingRef.current) return;
     savingRef.current = true;
@@ -609,6 +625,8 @@ export function AppShell() {
             real={real}
             protectedTotal={protectedTotal}
             protectedFunds={protectedFunds}
+            patrimony={patrimony}
+            pendingCommitments={pendingCommitments}
             upcoming={upcoming}
             spent={spent}
             txs={txs}
@@ -756,6 +774,8 @@ function HomePage({
   real,
   protectedTotal,
   protectedFunds,
+  patrimony,
+  pendingCommitments,
   upcoming,
   spent,
   txs,
@@ -769,6 +789,8 @@ function HomePage({
   real: number;
   protectedTotal: number;
   protectedFunds: ProtectedFund[];
+  patrimony: number;
+  pendingCommitments: number;
   upcoming: UpcomingItem[];
   spent: number;
   txs: Tx[];
@@ -808,7 +830,7 @@ function HomePage({
               {brl(real)}
             </p>
             <p className="mt-2 text-xs text-white/55">
-              Saldo em contas menos o dinheiro protegido
+              Dinheiro disponível hoje, sem descontar caixinhas já separadas
             </p>
           </div>
           <button
@@ -822,7 +844,11 @@ function HomePage({
         <div className="mt-7 grid grid-cols-3 gap-2 border-t border-white/15 pt-5">
           <Metric label="Saldo em contas" value={balance} />
           <Metric label="Protegido" value={protectedTotal} />
-          <Metric label="Gasto no mês" value={spent} />
+          <Metric label="Patrimônio total" value={patrimony} />
+        </div>
+        <div className="mt-4 flex items-center justify-between rounded-2xl bg-white/10 px-4 py-3 text-sm">
+          <span>Após compromissos pendentes</span>
+          <b className="money">{brl(real - pendingCommitments)}</b>
         </div>
       </section>
       <section className="card p-5">
