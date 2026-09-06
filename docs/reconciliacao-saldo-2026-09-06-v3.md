@@ -1,0 +1,1 @@
+Divergência de R$ 193,82 identificada entre o saldo em contas do app e o saldo real informado. Verificar origem antes de ajuste manual.
