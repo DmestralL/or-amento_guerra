@@ -1,66 +1,1341 @@
 "use client";
-import {useEffect,useMemo,useRef,useState} from "react";
-import {BarChart3,CalendarDays,ChevronRight,CircleDollarSign,Download,Flag,Home,Landmark,Menu,Plus,ReceiptText,ShieldCheck,Target,Users,WalletCards,X} from "lucide-react";
-import {brl,monthStatus} from "@/lib/format";
-import {categories as initialCategories} from "@/lib/demo-data";
-import {createClient as createSupabaseClient} from "@/lib/supabase/client";
-import {ExportPage,FamilyPage,GoalsPage,ReportsPage,WeeklyReviewPage,type Member} from "@/components/more-pages";
-import {TransactionHistory,type TransactionItem} from "@/components/transaction-history";
-import {BudgetManager} from "@/components/budget-manager";
-import {CreditCards,type CardItem} from "@/components/credit-cards";
-import {DebtManager} from "@/components/debt-manager";
-import {FinancialCalendar} from "@/components/financial-calendar";
-import {WalletAccounts,type AccountItem} from "@/components/wallet-accounts";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  BarChart3,
+  CalendarDays,
+  ChevronRight,
+  CircleDollarSign,
+  Download,
+  Flag,
+  Home,
+  Landmark,
+  Menu,
+  Plus,
+  ReceiptText,
+  ShieldCheck,
+  Target,
+  Users,
+  WalletCards,
+  X,
+} from "lucide-react";
+import { brl, monthStatus } from "@/lib/format";
+import { categories as initialCategories } from "@/lib/demo-data";
+import { createClient as createSupabaseClient } from "@/lib/supabase/client";
+import {
+  ExportPage,
+  FamilyPage,
+  GoalsPage,
+  ReportsPage,
+  WeeklyReviewPage,
+  type Member,
+} from "@/components/more-pages";
+import {
+  TransactionHistory,
+  type TransactionItem,
+} from "@/components/transaction-history";
+import { BudgetManager } from "@/components/budget-manager";
+import { CreditCards, type CardItem } from "@/components/credit-cards";
+import { DebtManager } from "@/components/debt-manager";
+import { FinancialCalendar } from "@/components/financial-calendar";
+import { WalletAccounts, type AccountItem } from "@/components/wallet-accounts";
+import {
+  accountBalance,
+  availableReal,
+  budgetSpent,
+} from "@/lib/financial-calculations";
 
-type Tx=TransactionItem;
-type DbTx={id:string,type:string,amount:number|string,description:string|null,occurred_on:string,planned:boolean,metadata:{registered_by?:string}|null,credit_card_id:string|null,transaction_categories:{name:string}|null,credit_cards:{name:string}|null};
-type DbMember={user_id:string,role:string,profiles:{display_name:string}|null};
-type DbCard={id:string,name:string,credit_limit:number|string|null,closing_day:number|null,due_day:number|null,active:boolean};
-type Page="home"|"budget"|"debts"|"more"|"weekly"|"goals"|"reports"|"export"|"family"|"history"|"cards"|"calendar"|"wallet";
-const quick=["Supermercado","Combustível","Farmácia","Crianças","Delivery/Lanches","Outros"];
+type Tx = TransactionItem;
+type DbTx = {
+  id: string;
+  type: string;
+  amount: number | string;
+  description: string | null;
+  occurred_on: string;
+  planned: boolean;
+  affects_cash: boolean;
+  affects_budget: boolean;
+  metadata: { registered_by?: string } | null;
+  credit_card_id: string | null;
+  transaction_categories: { name: string } | null;
+  credit_cards: { name: string } | null;
+};
+type ProtectedFund = {
+  id: string;
+  name: string;
+  amount: number;
+  protectedUntil: string | null;
+};
+type UpcomingItem = {
+  id: string;
+  title: string;
+  amount: number | null;
+  date: string;
+  kind: "bill" | "income";
+  status: string;
+};
+type DbMember = {
+  user_id: string;
+  role: string;
+  profiles: { display_name: string } | null;
+};
+type DbCard = {
+  id: string;
+  name: string;
+  credit_limit: number | string | null;
+  closing_day: number | null;
+  due_day: number | null;
+  active: boolean;
+};
+type Page =
+  | "home"
+  | "budget"
+  | "debts"
+  | "more"
+  | "weekly"
+  | "goals"
+  | "reports"
+  | "export"
+  | "family"
+  | "history"
+  | "cards"
+  | "calendar"
+  | "wallet";
+const quick = [
+  "Supermercado",
+  "Combustível",
+  "Farmácia",
+  "Crianças",
+  "Delivery/Lanches",
+  "Outros",
+];
 
-export function AppShell(){
- const savingRef=useRef(false);
- const [page,setPage]=useState<Page>("home"),[modal,setModal]=useState(false),[editing,setEditing]=useState<Tx|null>(null),[txs,setTxs]=useState<Tx[]>([]),[cards,setCards]=useState<CardItem[]>([]),[accounts,setAccounts]=useState<AccountItem[]>([]),[warStart,setWarStart]=useState(""),[warDays,setWarDays]=useState(90),[categoryNames,setCategoryNames]=useState(initialCategories.map(c=>c.name)),[notice,setNotice]=useState(""),[householdId,setHouseholdId]=useState(""),[members,setMembers]=useState<Member[]>([]),[currentPerson,setCurrentPerson]=useState("Família");
- async function reloadCards(id=householdId){if(!id)return;const {data}=await createSupabaseClient().from("credit_cards").select("id,name,credit_limit,closing_day,due_day,active").eq("household_id",id).eq("active",true).order("created_at");const db=(data??[]) as unknown as DbCard[];setCards(db.map(c=>({id:c.id,name:c.name,limit:Number(c.credit_limit||0),closingDay:c.closing_day||1,dueDay:c.due_day||1,active:c.active})))}
- useEffect(()=>{let active=true;async function load(){try{const sb=createSupabaseClient(),{data:{user}}=await sb.auth.getUser();if(!user)return;const {data:member}=await sb.from("household_members").select("household_id").eq("user_id",user.id).limit(1).maybeSingle();if(!member||!active)return;setHouseholdId(member.household_id);const [{data:rows},{data:memberRows},{data:profile},{data:cardRows}]=await Promise.all([sb.from("transactions").select("id,type,amount,description,occurred_on,planned,metadata,credit_card_id,transaction_categories(name),credit_cards(name)").eq("household_id",member.household_id).order("occurred_on",{ascending:false}),sb.from("household_members").select("user_id,role,profiles(display_name)").eq("household_id",member.household_id),sb.from("profiles").select("display_name").eq("id",user.id).maybeSingle(),sb.from("credit_cards").select("id,name,credit_limit,closing_day,due_day,active").eq("household_id",member.household_id).eq("active",true).order("created_at")]);if(!active)return;const dbRows=(rows??[]) as unknown as DbTx[],dbMembers=(memberRows??[]) as unknown as DbMember[],dbCards=(cardRows??[]) as unknown as DbCard[];setTxs(dbRows.map(r=>({id:r.id,type:r.type as Tx["type"],amount:Number(r.amount),category:r.transaction_categories?.name||"",description:r.description||"",person:r.metadata?.registered_by||"Família",planned:r.planned,date:r.occurred_on,cardId:r.credit_card_id||undefined,cardName:r.credit_cards?.name})));setCards(dbCards.map(c=>({id:c.id,name:c.name,limit:Number(c.credit_limit||0),closingDay:c.closing_day||1,dueDay:c.due_day||1,active:c.active})));setMembers(dbMembers.map(m=>({id:m.user_id,name:m.profiles?.display_name||"Membro da família",email:m.user_id===user.id?user.email||"":"Conta convidada",role:m.role})));setCurrentPerson(profile?.display_name||user.email?.split("@")[0]||"Família");}catch{setNotice("Não foi possível atualizar os dados compartilhados.")}}void load();return()=>{active=false}},[]);
- useEffect(()=>{if(!householdId)return;const sb=createSupabaseClient();const channel=sb.channel(`family-transactions-${householdId}`).on("postgres_changes",{event:"*",schema:"public",table:"transactions",filter:`household_id=eq.${householdId}`},async payload=>{if(payload.eventType==="DELETE"){setTxs(v=>v.filter(t=>t.id!==String(payload.old.id)));return}const id=String(payload.new.id),{data}=await sb.from("transactions").select("id,type,amount,description,occurred_on,planned,metadata,credit_card_id,transaction_categories(name),credit_cards(name)").eq("id",id).single();if(!data)return;const r=data as unknown as DbTx,next:Tx={id:r.id,type:r.type as Tx["type"],amount:Number(r.amount),category:r.transaction_categories?.name||"",description:r.description||"",person:r.metadata?.registered_by||"Família",planned:r.planned,date:r.occurred_on,cardId:r.credit_card_id||undefined,cardName:r.credit_cards?.name};setTxs(v=>[next,...v.filter(t=>t.id!==next.id)])}).subscribe();return()=>{void sb.removeChannel(channel)}},[householdId]);
- useEffect(()=>{if(!householdId)return;const sb=createSupabaseClient();async function loadWallet(){const [{data:rows},{data:home}]=await Promise.all([sb.from("accounts").select("id,name,kind,opening_balance,available_for_spending,value_status").eq("household_id",householdId).order("created_at"),sb.from("households").select("war_started_on,war_duration_days").eq("id",householdId).single()]);setAccounts((rows??[]).map(a=>({id:a.id,name:a.name,kind:a.kind,openingBalance:Number(a.opening_balance),available:a.available_for_spending,valueStatus:a.value_status})));if(home){setWarStart(home.war_started_on||"");setWarDays(home.war_duration_days||90)}}queueMicrotask(()=>void loadWallet());const channel=sb.channel(`family-wallet-${householdId}`).on("postgres_changes",{event:"*",schema:"public",table:"accounts",filter:`household_id=eq.${householdId}`},()=>void loadWallet()).subscribe();return()=>{void sb.removeChannel(channel)}},[householdId]);
- const currentMonth=new Intl.DateTimeFormat("en-CA",{timeZone:"America/Sao_Paulo",year:"numeric",month:"2-digit"}).format(new Date()).slice(0,7),spent=txs.filter(t=>t.date.startsWith(currentMonth)).reduce((s,t)=>s+(t.type==="expense"||t.type==="debt_payment"?t.amount:0),0),opening=accounts.filter(a=>a.available).reduce((sum,a)=>sum+a.openingBalance,0),balance=opening+txs.reduce((s,t)=>s+(t.type==="income"?t.amount:t.type==="transfer"||t.cardId?0:-t.amount),0);
- const save=async(tx:Tx)=>{if(savingRef.current)return;savingRef.current=true;try{const sb=createSupabaseClient(),{data:{user}}=await sb.auth.getUser();if(!user||!householdId)throw new Error("Família não carregada");let categoryId:null|string=null;if(tx.type==="expense"||tx.type==="income"){const kind=tx.type;const {data:cat}=await sb.from("transaction_categories").select("id").eq("household_id",householdId).eq("name",tx.category).eq("kind",kind).maybeSingle();if(cat)categoryId=cat.id;else{const {data:newCat,error:catError}=await sb.from("transaction_categories").insert({household_id:householdId,name:tx.category||"Outros",kind}).select("id").single();if(catError)throw catError;categoryId=newCat.id}}const payload={household_id:householdId,type:tx.type,amount:tx.amount,category_id:categoryId,credit_card_id:tx.cardId||null,description:tx.description||tx.category||"Movimentação",occurred_on:tx.date,planned:tx.planned,metadata:{registered_by:tx.person}};const {error}=editing?await sb.from("transactions").update(payload).eq("id",editing.id):await sb.from("transactions").insert({id:tx.id,...payload,created_by:user.id});if(error)throw error;setTxs(v=>editing?v.map(x=>x.id===editing.id?tx:x):[tx,...v.filter(x=>x.id!==tx.id)]);setNotice(editing?"Lançamento atualizado.":`${brl(tx.amount)} registrado por ${tx.person}.`);setModal(false);setEditing(null)}catch(e){setNotice(e instanceof Error?e.message:"Não foi possível salvar.")}finally{savingRef.current=false;setTimeout(()=>setNotice(""),3500)}};
- const remove=async(tx:Tx)=>{const sb=createSupabaseClient(),{error}=await sb.from("transactions").delete().eq("id",tx.id);if(error){setNotice(error.message);return}setTxs(v=>v.filter(x=>x.id!==tx.id));setNotice("Lançamento excluído.");setTimeout(()=>setNotice(""),3000)};
- const openNew=async()=>{if(householdId){const {data}=await createSupabaseClient().from("transaction_categories").select("name").eq("household_id",householdId).eq("kind","expense").eq("active",true).order("name");if(data?.length)setCategoryNames(data.map(c=>c.name))}setEditing(null);setModal(true)},openEdit=(tx:Tx)=>{setEditing(tx);setModal(true)};
- return <div className="min-h-screen bg-cream">
-  <header className="sticky top-0 z-20 border-b border-ink/10 bg-cream/90 backdrop-blur"><div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3"><div className="flex items-center gap-3"><div className="grid h-10 w-10 place-items-center rounded-2xl bg-ink text-lime"><CircleDollarSign/></div><div><p className="text-xs text-ink/60">Olá, {currentPerson}</p><h1 className="font-bold">Orçamento da Família</h1></div></div><div className="flex items-center"><button onClick={()=>setPage("family")} className="tap focus-ring flex items-center gap-2 rounded-2xl px-3 text-sm font-semibold" aria-label="Membros da família"><Users size={19}/> <span className="hidden sm:inline">{members.length} membros</span></button><form action="/auth/signout" method="post"><button className="tap focus-ring rounded-2xl px-3 text-xs font-bold text-ink/60">Sair</button></form></div></div></header>
-  <main className="safe-bottom mx-auto max-w-6xl px-4 py-5">{notice&&<div role="status" className="fixed left-1/2 top-20 z-50 -translate-x-1/2 rounded-full bg-ink px-5 py-3 text-sm font-bold text-white shadow-xl">{notice}</div>}{page==="home"&&<HomePage balance={balance} spent={spent} txs={txs} warStart={warStart} warDays={warDays} open={openNew} wallet={()=>setPage("wallet")} history={()=>setPage("history")}/>} {page==="wallet"&&<WalletAccounts householdId={householdId} txs={txs} back={()=>setPage("home")}/>} {page==="budget"&&<BudgetManager householdId={householdId} txs={txs}/>} {page==="debts"&&<DebtManager householdId={householdId}/>} {page==="cards"&&<CreditCards householdId={householdId} cards={cards} txs={txs} reload={reloadCards}/>} {page==="calendar"&&<FinancialCalendar householdId={householdId} back={()=>setPage("more")}/>} {page==="more"&&<MorePage open={setPage}/>} {page==="weekly"&&<WeeklyReviewPage back={()=>setPage("more")} txs={txs} householdId={householdId}/>} {page==="goals"&&<GoalsPage back={()=>setPage("more")} householdId={householdId}/>} {page==="reports"&&<ReportsPage back={()=>setPage("more")} txs={txs}/>} {page==="export"&&<ExportPage back={()=>setPage("more")} txs={txs}/>} {page==="family"&&<FamilyPage back={()=>setPage("more")} members={members} householdId={householdId}/>} {page==="history"&&<TransactionHistory txs={txs} back={()=>setPage("home")} edit={openEdit} remove={remove}/>}</main>
-  <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-ink/10 bg-white/95 px-2 pb-[env(safe-area-inset-bottom)] backdrop-blur md:left-1/2 md:bottom-5 md:max-w-xl md:-translate-x-1/2 md:rounded-3xl md:border md:shadow-soft"><div className="grid grid-cols-5 items-end"><Nav icon={<Home/>} label="Início" active={page==="home"} on={()=>setPage("home")}/><Nav icon={<BarChart3/>} label="Orçamento" active={page==="budget"} on={()=>setPage("budget")}/><button onClick={openNew} className="focus-ring -mt-5 flex flex-col items-center gap-1 text-xs font-bold"><span className="grid h-14 w-14 place-items-center rounded-full bg-ink text-lime shadow-xl"><Plus/></span>Lançar</button><Nav icon={<Landmark/>} label="Dívidas" active={page==="debts"} on={()=>setPage("debts")}/><Nav icon={<Menu/>} label="Mais" active={page==="more"} on={()=>setPage("more")}/></div></nav>
-  {modal&&<RegisterModal initial={editing} person={currentPerson} cards={cards} categories={categoryNames} onClose={()=>{setModal(false);setEditing(null)}} onSave={save}/>} 
- </div>
+export function AppShell() {
+  const savingRef = useRef(false);
+  const [page, setPage] = useState<Page>("home"),
+    [modal, setModal] = useState(false),
+    [editing, setEditing] = useState<Tx | null>(null),
+    [txs, setTxs] = useState<Tx[]>([]),
+    [cards, setCards] = useState<CardItem[]>([]),
+    [accounts, setAccounts] = useState<AccountItem[]>([]),
+    [protectedFunds, setProtectedFunds] = useState<ProtectedFund[]>([]),
+    [upcoming, setUpcoming] = useState<UpcomingItem[]>([]),
+    [warStart, setWarStart] = useState(""),
+    [warDays, setWarDays] = useState(90),
+    [categoryNames, setCategoryNames] = useState(
+      initialCategories.map((c) => c.name),
+    ),
+    [notice, setNotice] = useState(""),
+    [householdId, setHouseholdId] = useState(""),
+    [members, setMembers] = useState<Member[]>([]),
+    [currentPerson, setCurrentPerson] = useState("Família");
+  async function reloadCards(id = householdId) {
+    if (!id) return;
+    const { data } = await createSupabaseClient()
+      .from("credit_cards")
+      .select("id,name,credit_limit,closing_day,due_day,active")
+      .eq("household_id", id)
+      .eq("active", true)
+      .order("created_at");
+    const db = (data ?? []) as unknown as DbCard[];
+    setCards(
+      db.map((c) => ({
+        id: c.id,
+        name: c.name,
+        limit: Number(c.credit_limit || 0),
+        closingDay: c.closing_day || 1,
+        dueDay: c.due_day || 1,
+        active: c.active,
+      })),
+    );
+  }
+  useEffect(() => {
+    let active = true;
+    async function load() {
+      try {
+        const sb = createSupabaseClient(),
+          {
+            data: { user },
+          } = await sb.auth.getUser();
+        if (!user) return;
+        const { data: member } = await sb
+          .from("household_members")
+          .select("household_id")
+          .eq("user_id", user.id)
+          .limit(1)
+          .maybeSingle();
+        if (!member || !active) return;
+        setHouseholdId(member.household_id);
+        const [
+          { data: rows },
+          { data: memberRows },
+          { data: profile },
+          { data: cardRows },
+        ] = await Promise.all([
+          sb
+            .from("transactions")
+            .select(
+              "id,type,amount,description,occurred_on,planned,affects_cash,affects_budget,metadata,credit_card_id,transaction_categories(name),credit_cards(name)",
+            )
+            .eq("household_id", member.household_id)
+            .order("occurred_on", { ascending: false }),
+          sb
+            .from("household_members")
+            .select("user_id,role,profiles(display_name)")
+            .eq("household_id", member.household_id),
+          sb
+            .from("profiles")
+            .select("display_name")
+            .eq("id", user.id)
+            .maybeSingle(),
+          sb
+            .from("credit_cards")
+            .select("id,name,credit_limit,closing_day,due_day,active")
+            .eq("household_id", member.household_id)
+            .eq("active", true)
+            .order("created_at"),
+        ]);
+        if (!active) return;
+        const dbRows = (rows ?? []) as unknown as DbTx[],
+          dbMembers = (memberRows ?? []) as unknown as DbMember[],
+          dbCards = (cardRows ?? []) as unknown as DbCard[];
+        setTxs(
+          dbRows.map((r) => ({
+            id: r.id,
+            type: r.type as Tx["type"],
+            amount: Number(r.amount),
+            category: r.transaction_categories?.name || "",
+            description: r.description || "",
+            person: r.metadata?.registered_by || "Família",
+            planned: r.planned,
+            date: r.occurred_on,
+            cardId: r.credit_card_id || undefined,
+            cardName: r.credit_cards?.name,
+            affectsCash: r.affects_cash,
+            affectsBudget: r.affects_budget,
+          })),
+        );
+        setCards(
+          dbCards.map((c) => ({
+            id: c.id,
+            name: c.name,
+            limit: Number(c.credit_limit || 0),
+            closingDay: c.closing_day || 1,
+            dueDay: c.due_day || 1,
+            active: c.active,
+          })),
+        );
+        setMembers(
+          dbMembers.map((m) => ({
+            id: m.user_id,
+            name: m.profiles?.display_name || "Membro da família",
+            email: m.user_id === user.id ? user.email || "" : "Conta convidada",
+            role: m.role,
+          })),
+        );
+        setCurrentPerson(
+          profile?.display_name || user.email?.split("@")[0] || "Família",
+        );
+      } catch {
+        setNotice("Não foi possível atualizar os dados compartilhados.");
+      }
+    }
+    void load();
+    return () => {
+      active = false;
+    };
+  }, []);
+  useEffect(() => {
+    if (!householdId) return;
+    const sb = createSupabaseClient();
+    const channel = sb
+      .channel(`family-transactions-${householdId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "transactions",
+          filter: `household_id=eq.${householdId}`,
+        },
+        async (payload) => {
+          if (payload.eventType === "DELETE") {
+            setTxs((v) => v.filter((t) => t.id !== String(payload.old.id)));
+            return;
+          }
+          const id = String(payload.new.id),
+            { data } = await sb
+              .from("transactions")
+              .select(
+                "id,type,amount,description,occurred_on,planned,affects_cash,affects_budget,metadata,credit_card_id,transaction_categories(name),credit_cards(name)",
+              )
+              .eq("id", id)
+              .single();
+          if (!data) return;
+          const r = data as unknown as DbTx,
+            next: Tx = {
+              id: r.id,
+              type: r.type as Tx["type"],
+              amount: Number(r.amount),
+              category: r.transaction_categories?.name || "",
+              description: r.description || "",
+              person: r.metadata?.registered_by || "Família",
+              planned: r.planned,
+              date: r.occurred_on,
+              cardId: r.credit_card_id || undefined,
+              cardName: r.credit_cards?.name,
+              affectsCash: r.affects_cash,
+              affectsBudget: r.affects_budget,
+            };
+          setTxs((v) => [next, ...v.filter((t) => t.id !== next.id)]);
+        },
+      )
+      .subscribe();
+    return () => {
+      void sb.removeChannel(channel);
+    };
+  }, [householdId]);
+  useEffect(() => {
+    if (!householdId) return;
+    const sb = createSupabaseClient();
+    async function loadWallet() {
+      const [{ data: rows }, { data: home }] = await Promise.all([
+        sb
+          .from("accounts")
+          .select(
+            "id,name,kind,opening_balance,available_for_spending,value_status",
+          )
+          .eq("household_id", householdId)
+          .order("created_at"),
+        sb
+          .from("households")
+          .select("war_started_on,war_duration_days")
+          .eq("id", householdId)
+          .single(),
+      ]);
+      setAccounts(
+        (rows ?? []).map((a) => ({
+          id: a.id,
+          name: a.name,
+          kind: a.kind,
+          openingBalance: Number(a.opening_balance),
+          available: a.available_for_spending,
+          valueStatus: a.value_status,
+        })),
+      );
+      if (home) {
+        setWarStart(home.war_started_on || "");
+        setWarDays(home.war_duration_days || 90);
+      }
+    }
+    queueMicrotask(() => void loadWallet());
+    const channel = sb
+      .channel(`family-wallet-${householdId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "accounts",
+          filter: `household_id=eq.${householdId}`,
+        },
+        () => void loadWallet(),
+      )
+      .subscribe();
+    return () => {
+      void sb.removeChannel(channel);
+    };
+  }, [householdId]);
+  useEffect(() => {
+    if (!householdId) return;
+    const sb = createSupabaseClient();
+    async function loadPlanning() {
+      const [{ data: funds }, { data: events }, { data: incomes }] =
+        await Promise.all([
+          sb
+            .from("protected_funds")
+            .select("id,name,amount,protected_until")
+            .eq("household_id", householdId)
+            .eq("active", true),
+          sb
+            .from("financial_events")
+            .select("id,title,amount,starts_on,status")
+            .eq("household_id", householdId)
+            .eq("status", "planned")
+            .order("starts_on"),
+          sb
+            .from("planned_income")
+            .select("id,description,amount,expected_on,status")
+            .eq("household_id", householdId)
+            .eq("status", "planned")
+            .order("expected_on"),
+        ]);
+      setProtectedFunds(
+        (funds ?? []).map((x) => ({
+          id: x.id,
+          name: x.name,
+          amount: Number(x.amount),
+          protectedUntil: x.protected_until,
+        })),
+      );
+      setUpcoming(
+        [
+          ...(events ?? []).map((x) => ({
+            id: x.id,
+            title: x.title,
+            amount: x.amount == null ? null : Number(x.amount),
+            date: x.starts_on,
+            kind: "bill" as const,
+            status: x.status,
+          })),
+          ...(incomes ?? []).map((x) => ({
+            id: x.id,
+            title: x.description,
+            amount: x.amount == null ? null : Number(x.amount),
+            date: x.expected_on,
+            kind: "income" as const,
+            status: x.status,
+          })),
+        ]
+          .sort((a, b) => a.date.localeCompare(b.date))
+          .slice(0, 8),
+      );
+    }
+    queueMicrotask(() => void loadPlanning());
+    const channel = sb
+      .channel(`family-planning-${householdId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "protected_funds",
+          filter: `household_id=eq.${householdId}`,
+        },
+        () => void loadPlanning(),
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "financial_events",
+          filter: `household_id=eq.${householdId}`,
+        },
+        () => void loadPlanning(),
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "planned_income",
+          filter: `household_id=eq.${householdId}`,
+        },
+        () => void loadPlanning(),
+      )
+      .subscribe();
+    return () => {
+      void sb.removeChannel(channel);
+    };
+  }, [householdId]);
+  const currentMonth = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Sao_Paulo",
+      year: "numeric",
+      month: "2-digit",
+    })
+      .format(new Date())
+      .slice(0, 7),
+    movements = txs.map((t) => ({
+      ...t,
+      affectsCash:
+        t.affectsCash ??
+        (t.type === "income" ||
+          ((t.type === "expense" || t.type === "debt_payment") && !t.cardId)),
+      affectsBudget:
+        t.affectsBudget ?? (t.type === "expense" || t.type === "debt_payment"),
+    })),
+    spent = budgetSpent(movements, currentMonth),
+    opening = accounts
+      .filter((a) => a.available)
+      .reduce((sum, a) => sum + a.openingBalance, 0),
+    balance = accountBalance(opening, movements),
+    protectedTotal = protectedFunds.reduce((sum, fund) => sum + fund.amount, 0),
+    real = availableReal(balance, protectedTotal);
+  const save = async (tx: Tx) => {
+    if (savingRef.current) return;
+    savingRef.current = true;
+    try {
+      const sb = createSupabaseClient(),
+        {
+          data: { user },
+        } = await sb.auth.getUser();
+      if (!user || !householdId) throw new Error("Família não carregada");
+      let categoryId: null | string = null;
+      if (tx.type === "expense" || tx.type === "income") {
+        const kind = tx.type;
+        const { data: cat } = await sb
+          .from("transaction_categories")
+          .select("id")
+          .eq("household_id", householdId)
+          .eq("name", tx.category)
+          .eq("kind", kind)
+          .maybeSingle();
+        if (cat) categoryId = cat.id;
+        else {
+          const { data: newCat, error: catError } = await sb
+            .from("transaction_categories")
+            .insert({
+              household_id: householdId,
+              name: tx.category || "Outros",
+              kind,
+            })
+            .select("id")
+            .single();
+          if (catError) throw catError;
+          categoryId = newCat.id;
+        }
+      }
+      const payload = {
+        household_id: householdId,
+        type: tx.type,
+        amount: tx.amount,
+        category_id: categoryId,
+        credit_card_id: tx.cardId || null,
+        description: tx.description || tx.category || "Movimentação",
+        occurred_on: tx.date,
+        planned: tx.planned,
+        affects_cash:
+          tx.type === "income" ||
+          ((tx.type === "expense" || tx.type === "debt_payment") && !tx.cardId),
+        affects_budget: tx.type === "expense" || tx.type === "debt_payment",
+        metadata: { registered_by: tx.person },
+      };
+      const { error } = editing
+        ? await sb.from("transactions").update(payload).eq("id", editing.id)
+        : await sb
+            .from("transactions")
+            .insert({ id: tx.id, ...payload, created_by: user.id });
+      if (error) throw error;
+      setTxs((v) =>
+        editing
+          ? v.map((x) => (x.id === editing.id ? tx : x))
+          : [tx, ...v.filter((x) => x.id !== tx.id)],
+      );
+      setNotice(
+        editing
+          ? "Lançamento atualizado."
+          : `${brl(tx.amount)} registrado por ${tx.person}.`,
+      );
+      setModal(false);
+      setEditing(null);
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : "Não foi possível salvar.");
+    } finally {
+      savingRef.current = false;
+      setTimeout(() => setNotice(""), 3500);
+    }
+  };
+  const remove = async (tx: Tx) => {
+    const sb = createSupabaseClient(),
+      { error } = await sb.from("transactions").delete().eq("id", tx.id);
+    if (error) {
+      setNotice(error.message);
+      return;
+    }
+    setTxs((v) => v.filter((x) => x.id !== tx.id));
+    setNotice("Lançamento excluído.");
+    setTimeout(() => setNotice(""), 3000);
+  };
+  const openNew = async () => {
+      if (householdId) {
+        const { data } = await createSupabaseClient()
+          .from("transaction_categories")
+          .select("name")
+          .eq("household_id", householdId)
+          .eq("kind", "expense")
+          .eq("active", true)
+          .order("name");
+        if (data?.length) setCategoryNames(data.map((c) => c.name));
+      }
+      setEditing(null);
+      setModal(true);
+    },
+    openEdit = (tx: Tx) => {
+      setEditing(tx);
+      setModal(true);
+    };
+  return (
+    <div className="min-h-screen bg-cream">
+      <header className="sticky top-0 z-20 border-b border-ink/10 bg-cream/90 backdrop-blur">
+        <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
+          <div className="flex items-center gap-3">
+            <div className="grid h-10 w-10 place-items-center rounded-2xl bg-ink text-lime">
+              <CircleDollarSign />
+            </div>
+            <div>
+              <p className="text-xs text-ink/60">Olá, {currentPerson}</p>
+              <h1 className="font-bold">Orçamento da Família</h1>
+            </div>
+          </div>
+          <div className="flex items-center">
+            <button
+              onClick={() => setPage("family")}
+              className="tap focus-ring flex items-center gap-2 rounded-2xl px-3 text-sm font-semibold"
+              aria-label="Membros da família"
+            >
+              <Users size={19} />{" "}
+              <span className="hidden sm:inline">{members.length} membros</span>
+            </button>
+            <form action="/auth/signout" method="post">
+              <button className="tap focus-ring rounded-2xl px-3 text-xs font-bold text-ink/60">
+                Sair
+              </button>
+            </form>
+          </div>
+        </div>
+      </header>
+      <main className="safe-bottom mx-auto max-w-6xl px-4 py-5">
+        {notice && (
+          <div
+            role="status"
+            className="fixed left-1/2 top-20 z-50 -translate-x-1/2 rounded-full bg-ink px-5 py-3 text-sm font-bold text-white shadow-xl"
+          >
+            {notice}
+          </div>
+        )}
+        {page === "home" && (
+          <HomePage
+            balance={balance}
+            real={real}
+            protectedTotal={protectedTotal}
+            protectedFunds={protectedFunds}
+            upcoming={upcoming}
+            spent={spent}
+            txs={txs}
+            warStart={warStart}
+            warDays={warDays}
+            open={openNew}
+            wallet={() => setPage("wallet")}
+            history={() => setPage("history")}
+          />
+        )}{" "}
+        {page === "wallet" && (
+          <WalletAccounts
+            householdId={householdId}
+            txs={txs}
+            back={() => setPage("home")}
+          />
+        )}{" "}
+        {page === "budget" && (
+          <BudgetManager householdId={householdId} txs={txs} />
+        )}{" "}
+        {page === "debts" && <DebtManager householdId={householdId} />}{" "}
+        {page === "cards" && (
+          <CreditCards
+            householdId={householdId}
+            cards={cards}
+            txs={txs}
+            reload={reloadCards}
+          />
+        )}{" "}
+        {page === "calendar" && (
+          <FinancialCalendar
+            householdId={householdId}
+            back={() => setPage("more")}
+          />
+        )}{" "}
+        {page === "more" && <MorePage open={setPage} />}{" "}
+        {page === "weekly" && (
+          <WeeklyReviewPage
+            back={() => setPage("more")}
+            txs={txs}
+            householdId={householdId}
+          />
+        )}{" "}
+        {page === "goals" && (
+          <GoalsPage back={() => setPage("more")} householdId={householdId} />
+        )}{" "}
+        {page === "reports" && (
+          <ReportsPage back={() => setPage("more")} txs={txs} />
+        )}{" "}
+        {page === "export" && (
+          <ExportPage back={() => setPage("more")} txs={txs} />
+        )}{" "}
+        {page === "family" && (
+          <FamilyPage
+            back={() => setPage("more")}
+            members={members}
+            householdId={householdId}
+          />
+        )}{" "}
+        {page === "history" && (
+          <TransactionHistory
+            txs={txs}
+            back={() => setPage("home")}
+            edit={openEdit}
+            remove={remove}
+          />
+        )}
+      </main>
+      <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-ink/10 bg-white/95 px-2 pb-[env(safe-area-inset-bottom)] backdrop-blur md:left-1/2 md:bottom-5 md:max-w-xl md:-translate-x-1/2 md:rounded-3xl md:border md:shadow-soft">
+        <div className="grid grid-cols-5 items-end">
+          <Nav
+            icon={<Home />}
+            label="Início"
+            active={page === "home"}
+            on={() => setPage("home")}
+          />
+          <Nav
+            icon={<BarChart3 />}
+            label="Orçamento"
+            active={page === "budget"}
+            on={() => setPage("budget")}
+          />
+          <button
+            onClick={openNew}
+            className="focus-ring -mt-5 flex flex-col items-center gap-1 text-xs font-bold"
+          >
+            <span className="grid h-14 w-14 place-items-center rounded-full bg-ink text-lime shadow-xl">
+              <Plus />
+            </span>
+            Lançar
+          </button>
+          <Nav
+            icon={<Landmark />}
+            label="Dívidas"
+            active={page === "debts"}
+            on={() => setPage("debts")}
+          />
+          <Nav
+            icon={<Menu />}
+            label="Mais"
+            active={page === "more"}
+            on={() => setPage("more")}
+          />
+        </div>
+      </nav>
+      {modal && (
+        <RegisterModal
+          initial={editing}
+          person={currentPerson}
+          cards={cards}
+          categories={categoryNames}
+          onClose={() => {
+            setModal(false);
+            setEditing(null);
+          }}
+          onSave={save}
+        />
+      )}
+    </div>
+  );
 }
-function Nav({icon,label,active,on}:{icon:React.ReactNode,label:string,active:boolean,on:()=>void}){return <button onClick={on} className={`focus-ring tap flex flex-col items-center justify-center gap-1 py-2 text-[11px] font-bold ${active?"text-ink":"text-ink/45"}`}><span className="[&>svg]:h-5">{icon}</span>{label}</button>}
-function HomePage({balance,spent,txs,warStart,warDays,open,wallet,history}:{balance:number,spent:number,txs:Tx[],warStart:string,warDays:number,open:()=>void,wallet:()=>void,history:()=>void}){const remaining=3226.58-spent,pct=Math.round(spent/3226.58*100),unplanned=txs.filter(t=>!t.planned&&t.type==="expense").reduce((s,t)=>s+t.amount,0),status=monthStatus(spent,3226.58,9,30),now=new Date(new Intl.DateTimeFormat("en-CA",{timeZone:"America/Sao_Paulo"}).format(new Date())+"T12:00:00Z"),start=warStart?new Date(`${warStart}T12:00:00Z`):now,elapsed=Math.max(1,Math.min(warDays,Math.floor((now.getTime()-start.getTime())/86400000)+1)),warPct=Math.min(100,elapsed/warDays*100);return <div className="space-y-5">
- <section className="rounded-[2rem] bg-ink p-5 text-white shadow-soft md:p-8"><div className="flex items-start justify-between"><div><p className="text-sm text-white/65">Saldo disponível</p><p className="money mt-1 text-4xl font-black md:text-5xl">{brl(balance)}</p><p className="mt-2 text-xs text-white/55">Não inclui FGTS nem receitas previstas</p></div><button onClick={wallet} className="tap focus-ring grid w-12 place-items-center rounded-2xl text-lime hover:bg-white/10" aria-label="Abrir saldo e contas"><WalletCards/></button></div><div className="mt-7 grid grid-cols-3 gap-2 border-t border-white/15 pt-5"><Metric label="Pode gastar" value={remaining}/><Metric label="Gasto no mês" value={spent}/><Metric label="Reserva" value={1291.84}/></div></section>
- <section className="card p-5"><div className="flex items-center justify-between"><div><p className="label">Orçamento do mês</p><h2 className="mt-1 text-lg font-extrabold">{brl(spent)} usados de {brl(3226.58)}</h2></div><span className={`rounded-full px-3 py-2 text-xs font-black ${status==="NO CAMINHO"?"bg-mint":status==="ATENÇÃO"?"bg-amber-100":"bg-red-100"}`}>{status}</span></div><div className="mt-4 h-3 overflow-hidden rounded-full bg-ink/10"><div className={`h-full rounded-full ${pct>100?"bg-red-500":pct>75?"bg-amber-400":"bg-ink"}`} style={{width:`${Math.min(pct,100)}%`}}/></div><div className="mt-2 flex justify-between text-xs font-bold"><span>{pct}% usado</span><span>{brl(Math.max(remaining,0))} restante</span></div></section>
- <button onClick={open} className="focus-ring tap flex w-full items-center justify-between rounded-3xl bg-lime p-5 text-left shadow-soft"><span><span className="block text-xl font-black">+ Registrar agora</span><span className="text-sm">Um gasto em menos de 10 segundos</span></span><ChevronRight/></button>
- <div className="grid gap-4 md:grid-cols-2"><section className="card p-5"><div className="flex justify-between"><div><p className="label">Orçamento de guerra</p><h2 className="mt-1 text-xl font-black">Dia {elapsed} de {warDays}</h2><p className="mt-1 text-xs text-ink/55">Iniciado em {new Intl.DateTimeFormat("pt-BR",{timeZone:"UTC"}).format(start)}</p></div><Flag/></div><div className="mt-4 h-2 rounded-full bg-ink/10"><div className="h-full rounded-full bg-coral transition-all" style={{width:`${warPct}%`}}/></div><ul className="mt-4 space-y-2 text-sm"><li>✓ Nenhuma dívida nova</li><li>○ Nubank pago integralmente</li><li>✓ Não usar rotativo</li><li>✓ Não contratar empréstimo</li></ul></section><section className="card p-5"><p className="label">Próximos passos</p><div className="mt-3 space-y-3"><Event date="10–13/09" text="Congresso"/><Event date="17/09" text="Fechamento Nubank"/><Event date="22/09" text="Vencimento Nubank · R$ 422,68"/><Event date="25/09" text="Aluguel previsto · R$ 867,18"/></div></section></div>
- <div className="grid gap-4 sm:grid-cols-3"><SmallCard title="Gastos não planejados" value={brl(unplanned)} note="neste mês"/><SmallCard title="Meta da reserva" value="43,1%" note={`${brl(1291.84)} de ${brl(3000)}`}/><SmallCard title="Patrimônio separado" value={brl(2274.07)} note="FGTS — não disponível"/></div>
- <section><div className="mb-3 flex items-end justify-between"><div><p className="label">Movimentações</p><h2 className="text-xl font-black">Últimos lançamentos</h2></div><button onClick={history} className="text-sm font-bold">Ver tudo</button></div><div className="card divide-y divide-ink/10">{txs.length?txs.slice(0,4).map(t=><div key={t.id} className="flex items-center gap-3 p-4"><span className={`grid h-10 w-10 place-items-center rounded-2xl ${t.type==="income"?"bg-mint":"bg-cream"}`}><ReceiptText size={19}/></span><div className="min-w-0 flex-1"><p className="truncate font-bold">{t.description||t.category}</p><p className="text-xs text-ink/55">{t.category||"Movimentação"} · Registrado por {t.person}</p></div><p className="money font-black">{t.type==="income"?"+":"−"}{brl(t.amount)}</p></div>):<p className="p-5 text-center text-sm text-ink/55">Nenhum lançamento ainda.</p>}</div></section>
- </div>}
-function Metric({label,value}:{label:string,value:number}){return <div><p className="text-[10px] uppercase text-white/55">{label}</p><p className="money mt-1 text-sm font-black sm:text-lg">{brl(value)}</p></div>}
-function Event({date,text}:{date:string,text:string}){return <div className="flex gap-3"><span className="w-20 shrink-0 text-xs font-black text-ink/55">{date}</span><span className="text-sm font-semibold">{text}</span></div>}
-function SmallCard({title,value,note}:{title:string,value:string,note:string}){return <div className="card p-4"><p className="label">{title}</p><p className="money mt-2 text-2xl font-black">{value}</p><p className="mt-1 text-xs text-ink/55">{note}</p></div>}
-function MorePage({open}:{open:(page:Page)=>void}){const items:[Page,React.ReactNode,string,string][]=[["calendar",<CalendarDays key="cal"/>,"Calendário financeiro","Vencimentos, receitas e alertas"],["weekly",<CalendarDays key="w"/>,"Revisão da Semana","Receitas, gastos e perguntas do casal"],["goals",<Target key="g"/>,"Metas e reserva","Meta inicial de R$ 3.000"],["cards",<WalletCards key="c"/>,"Cartões de crédito","Faturas e limites dinâmicos"],["reports",<BarChart3 key="r"/>,"Relatórios","7 dias a 12 meses"],["export",<Download key="e"/>,"Exportar meus dados","CSV e backup JSON"],["family",<ShieldCheck key="f"/>,"Família e segurança","Convites e membros"]];return <div><p className="label">Organizar</p><h2 className="text-3xl font-black">Mais opções</h2><div className="card mt-5 divide-y divide-ink/10">{items.map(([page,i,t,s])=><button key={t} onClick={()=>open(page)} className="tap flex w-full items-center gap-4 p-4 text-left"><span className="grid h-11 w-11 place-items-center rounded-2xl bg-mint">{i}</span><span className="flex-1"><b className="block">{t}</b><small className="text-ink/55">{s}</small></span><ChevronRight size={18}/></button>)}</div><section className="card mt-5 p-5"><p className="label">Patrimônio</p><div className="mt-3 grid grid-cols-2 gap-4 text-sm"><span>Imóvel estimado<br/><b>{brl(230000)}</b></span><span>Financiamento<br/><b>− {brl(146461.55)}</b></span><span>Carro (estimado)<br/><b>~ {brl(12000)}</b></span><span>FGTS<br/><b>{brl(2274.07)}</b></span></div></section></div>}
-function RegisterModal({initial,person,cards,categories,onClose,onSave}:{initial:Tx|null,person:string,cards:CardItem[],categories:string[],onClose:()=>void,onSave:(t:Tx)=>void}){
- const [type,setType]=useState<Tx["type"]>(initial?.type??"expense");
- const [category,setCategory]=useState(initial?.category||"Supermercado");
- const [amount,setAmount]=useState(initial?initial.amount.toFixed(2).replace(".",","):"");
- const [description,setDescription]=useState(initial?.description||"");
- const [date,setDate]=useState(initial?.date||new Date().toISOString().slice(0,10));
- const [cardId,setCardId]=useState(initial?.cardId||"");
- const [planned,setPlanned]=useState(initial?.planned??true);
- const [more,setMore]=useState(Boolean(initial));
- const value=useMemo(()=>Number(amount.replaceAll(".","").replace(",",".")),[amount]);
- const incomeCategories=["Salário","Adiantamento","Horas extras","Férias","13º","Aluguel recebido","Renda extra","Outros"];
- function chooseType(next:Tx["type"]){setType(next);if(next==="income")setCategory("Salário");else if(next==="expense")setCategory("Supermercado");else setCategory("")}
- return <div className="fixed inset-0 z-50 flex items-end justify-center bg-ink/45 backdrop-blur-sm sm:items-center sm:p-4" role="dialog" aria-modal="true" aria-label={initial?"Editar lançamento":"Registrar lançamento"}><div className="max-h-[94vh] w-full max-w-lg overflow-y-auto rounded-t-[2rem] bg-white p-5 shadow-2xl sm:rounded-[2rem]"><div className="flex items-center justify-between"><div><p className="label">{initial?"Editar":"Novo lançamento"}</p><h2 className="text-2xl font-black">{initial?"Atualizar movimentação":"Registrar em segundos"}</h2></div><button className="tap focus-ring p-3" onClick={onClose} aria-label="Fechar"><X/></button></div><div className="mt-4 grid grid-cols-2 gap-1 rounded-2xl bg-cream p-1 sm:grid-cols-4">{([['expense','Despesa'],['income','Receita'],['transfer','Transferência'],['debt_payment','Pagar dívida']] as [Tx["type"],string][]).map(([key,label])=><button key={key} onClick={()=>chooseType(key)} className={`tap rounded-xl px-2 text-xs font-bold ${type===key?"bg-white shadow":""}`}>{label}</button>)}</div>{type==="expense"&&<div className="mt-4 flex gap-2 overflow-x-auto pb-2">{quick.map(q=><button key={q} onClick={()=>setCategory(q)} className={`tap shrink-0 rounded-full border px-4 text-sm font-bold ${category===q?"border-ink bg-ink text-white":"border-ink/15"}`}>+ {q}</button>)}</div>}<label className="mt-4 block"><span className="label">Valor</span><div className="mt-1 flex items-center rounded-2xl border-2 border-ink/15 px-4 focus-within:border-ink"><span className="text-xl font-black">R$</span><input autoFocus inputMode="decimal" value={amount} onChange={e=>setAmount(e.target.value)} placeholder="0,00" className="money w-full border-0 bg-transparent p-4 text-3xl font-black outline-none"/></div></label><div className="mt-4 grid grid-cols-2 gap-3">{(type==="expense"||type==="income")&&<label><span className="label">Categoria</span><select value={category} onChange={e=>setCategory(e.target.value)} className="tap mt-1 w-full rounded-xl border border-ink/15 bg-white px-3">{(type==="income"?incomeCategories:categories).map(name=><option key={name}>{name}</option>)}</select></label>}<label className={type==="transfer"||type==="debt_payment"?"col-span-2":""}><span className="label">Data</span><input type="date" value={date} onChange={e=>setDate(e.target.value)} className="tap mt-1 w-full rounded-xl border border-ink/15 px-3"/></label></div>{type==="expense"&&cards.length>0&&<label className="mt-4 block"><span className="label">Forma de pagamento</span><select value={cardId} onChange={e=>setCardId(e.target.value)} className="tap mt-1 w-full rounded-xl border bg-white px-3"><option value="">Dinheiro / débito / Pix</option>{cards.map(card=><option key={card.id} value={card.id}>Cartão {card.name}</option>)}</select>{cardId&&<small className="mt-1 block text-ink/55">A compra entrará automaticamente na fatura conforme o dia de fechamento.</small>}</label>}<label className="mt-4 block"><span className="label">Descrição {type==="transfer"||type==="debt_payment"?"":"(opcional)"}</span><input value={description} onChange={e=>setDescription(e.target.value)} placeholder={type==="debt_payment"?"Ex.: parcela Santander":type==="transfer"?"Ex.: Conta para reserva":"Ex.: compra da semana"} className="tap mt-1 w-full rounded-xl border border-ink/15 px-3"/></label><button onClick={()=>setMore(v=>!v)} className="tap mt-2 text-sm font-bold">{more?"− Ocultar detalhes":"+ Adicionar detalhes"}</button>{more&&<div className="grid grid-cols-2 gap-3 rounded-2xl bg-cream p-4"><div><span className="label">Registrado por</span><p className="mt-2 font-bold">{person}</p></div><label><span className="label">Planejamento</span><select value={planned?"yes":"no"} onChange={e=>setPlanned(e.target.value==="yes")} className="tap mt-1 w-full rounded-xl bg-white px-3"><option value="yes">Planejada</option><option value="no">Não planejada</option></select></label></div>}<button disabled={!value||value<=0||!date||((type==="transfer"||type==="debt_payment")&&!description)} onClick={()=>onSave({id:initial?.id||crypto.randomUUID(),type,amount:value,category,description,person:initial?.person||person,planned,date,cardId:cardId||undefined,cardName:cards.find(c=>c.id===cardId)?.name})} className="focus-ring tap mt-5 w-full rounded-2xl bg-ink p-4 text-lg font-black text-white disabled:opacity-40">{initial?"Salvar alterações":"Salvar"}</button></div></div>
+function Nav({
+  icon,
+  label,
+  active,
+  on,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  active: boolean;
+  on: () => void;
+}) {
+  return (
+    <button
+      onClick={on}
+      className={`focus-ring tap flex flex-col items-center justify-center gap-1 py-2 text-[11px] font-bold ${active ? "text-ink" : "text-ink/45"}`}
+    >
+      <span className="[&>svg]:h-5">{icon}</span>
+      {label}
+    </button>
+  );
+}
+function HomePage({
+  balance,
+  real,
+  protectedTotal,
+  protectedFunds,
+  upcoming,
+  spent,
+  txs,
+  warStart,
+  warDays,
+  open,
+  wallet,
+  history,
+}: {
+  balance: number;
+  real: number;
+  protectedTotal: number;
+  protectedFunds: ProtectedFund[];
+  upcoming: UpcomingItem[];
+  spent: number;
+  txs: Tx[];
+  warStart: string;
+  warDays: number;
+  open: () => void;
+  wallet: () => void;
+  history: () => void;
+}) {
+  const remaining = 3226.58 - spent,
+    pct = Math.round((spent / 3226.58) * 100),
+    unplanned = txs
+      .filter((t) => !t.planned && t.type === "expense")
+      .reduce((s, t) => s + t.amount, 0),
+    status = monthStatus(spent, 3226.58, 9, 30),
+    now = new Date(
+      new Intl.DateTimeFormat("en-CA", {
+        timeZone: "America/Sao_Paulo",
+      }).format(new Date()) + "T12:00:00Z",
+    ),
+    start = warStart ? new Date(`${warStart}T12:00:00Z`) : now,
+    elapsed = Math.max(
+      1,
+      Math.min(
+        warDays,
+        Math.floor((now.getTime() - start.getTime()) / 86400000) + 1,
+      ),
+    ),
+    warPct = Math.min(100, (elapsed / warDays) * 100);
+  return (
+    <div className="space-y-5">
+      <section className="rounded-[2rem] bg-ink p-5 text-white shadow-soft md:p-8">
+        <div className="flex items-start justify-between">
+          <div>
+            <p className="text-sm text-white/65">Disponível real</p>
+            <p className="money mt-1 text-4xl font-black md:text-5xl">
+              {brl(real)}
+            </p>
+            <p className="mt-2 text-xs text-white/55">
+              Saldo em contas menos o dinheiro protegido
+            </p>
+          </div>
+          <button
+            onClick={wallet}
+            className="tap focus-ring grid w-12 place-items-center rounded-2xl text-lime hover:bg-white/10"
+            aria-label="Abrir saldo e contas"
+          >
+            <WalletCards />
+          </button>
+        </div>
+        <div className="mt-7 grid grid-cols-3 gap-2 border-t border-white/15 pt-5">
+          <Metric label="Saldo em contas" value={balance} />
+          <Metric label="Protegido" value={protectedTotal} />
+          <Metric label="Gasto no mês" value={spent} />
+        </div>
+      </section>
+      <section className="card p-5">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="label">Orçamento do mês</p>
+            <h2 className="mt-1 text-lg font-extrabold">
+              {brl(spent)} usados de {brl(3226.58)}
+            </h2>
+          </div>
+          <span
+            className={`rounded-full px-3 py-2 text-xs font-black ${status === "NO CAMINHO" ? "bg-mint" : status === "ATENÇÃO" ? "bg-amber-100" : "bg-red-100"}`}
+          >
+            {status}
+          </span>
+        </div>
+        <div className="mt-4 h-3 overflow-hidden rounded-full bg-ink/10">
+          <div
+            className={`h-full rounded-full ${pct > 100 ? "bg-red-500" : pct > 75 ? "bg-amber-400" : "bg-ink"}`}
+            style={{ width: `${Math.min(pct, 100)}%` }}
+          />
+        </div>
+        <div className="mt-2 flex justify-between text-xs font-bold">
+          <span>{pct}% usado</span>
+          <span>{brl(Math.max(remaining, 0))} restante</span>
+        </div>
+      </section>
+      <button
+        onClick={open}
+        className="focus-ring tap flex w-full items-center justify-between rounded-3xl bg-lime p-5 text-left shadow-soft"
+      >
+        <span>
+          <span className="block text-xl font-black">+ Registrar agora</span>
+          <span className="text-sm">Um gasto em menos de 10 segundos</span>
+        </span>
+        <ChevronRight />
+      </button>
+      <div className="grid gap-4 md:grid-cols-2">
+        <section className="card p-5">
+          <div className="flex justify-between">
+            <div>
+              <p className="label">Orçamento de guerra</p>
+              <h2 className="mt-1 text-xl font-black">
+                Dia {elapsed} de {warDays}
+              </h2>
+              <p className="mt-1 text-xs text-ink/55">
+                Iniciado em{" "}
+                {new Intl.DateTimeFormat("pt-BR", { timeZone: "UTC" }).format(
+                  start,
+                )}
+              </p>
+            </div>
+            <Flag />
+          </div>
+          <div className="mt-4 h-2 rounded-full bg-ink/10">
+            <div
+              className="h-full rounded-full bg-coral transition-all"
+              style={{ width: `${warPct}%` }}
+            />
+          </div>
+          <ul className="mt-4 space-y-2 text-sm">
+            <li>✓ Nenhuma dívida nova</li>
+            <li>○ Nubank pago integralmente</li>
+            <li>✓ Não usar rotativo</li>
+            <li>✓ Não contratar empréstimo</li>
+          </ul>
+        </section>
+        <section className="card p-5">
+          <p className="label">Próximos passos</p>
+          <div className="mt-3 space-y-3">
+            {upcoming.length ? (
+              upcoming.map((item) => (
+                <Event
+                  key={`${item.kind}-${item.id}`}
+                  date={new Date(`${item.date}T12:00:00`).toLocaleDateString(
+                    "pt-BR",
+                    { day: "2-digit", month: "2-digit" },
+                  )}
+                  text={`${item.kind === "income" ? "Entrada prevista: " : ""}${item.title}${item.amount == null ? " · valor a confirmar" : ` · ${brl(item.amount)}`}`}
+                />
+              ))
+            ) : (
+              <p className="text-sm text-ink/55">Nenhum compromisso próximo.</p>
+            )}
+          </div>
+        </section>
+      </div>
+      <div className="grid gap-4 sm:grid-cols-3">
+        <SmallCard
+          title="Gastos não planejados"
+          value={brl(unplanned)}
+          note="neste mês"
+        />
+        <SmallCard
+          title="Meta da reserva"
+          value={brl(
+            protectedFunds.find((x) => x.name === "Reserva mínima")?.amount ??
+              0,
+          )}
+          note="valor protegido e fora do disponível"
+        />
+        <SmallCard
+          title="Patrimônio separado"
+          value={brl(2274.07)}
+          note="FGTS — não disponível"
+        />
+      </div>
+      <section>
+        <div className="mb-3 flex items-end justify-between">
+          <div>
+            <p className="label">Movimentações</p>
+            <h2 className="text-xl font-black">Últimos lançamentos</h2>
+          </div>
+          <button onClick={history} className="text-sm font-bold">
+            Ver tudo
+          </button>
+        </div>
+        <div className="card divide-y divide-ink/10">
+          {txs.length ? (
+            txs.slice(0, 4).map((t) => (
+              <div key={t.id} className="flex items-center gap-3 p-4">
+                <span
+                  className={`grid h-10 w-10 place-items-center rounded-2xl ${t.type === "income" ? "bg-mint" : "bg-cream"}`}
+                >
+                  <ReceiptText size={19} />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate font-bold">
+                    {t.description || t.category}
+                  </p>
+                  <p className="text-xs text-ink/55">
+                    {t.category || "Movimentação"} · Registrado por {t.person}
+                  </p>
+                </div>
+                <p className="money font-black">
+                  {t.type === "income" ? "+" : "−"}
+                  {brl(t.amount)}
+                </p>
+              </div>
+            ))
+          ) : (
+            <p className="p-5 text-center text-sm text-ink/55">
+              Nenhum lançamento ainda.
+            </p>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+function Metric({ label, value }: { label: string; value: number }) {
+  return (
+    <div>
+      <p className="text-[10px] uppercase text-white/55">{label}</p>
+      <p className="money mt-1 text-sm font-black sm:text-lg">{brl(value)}</p>
+    </div>
+  );
+}
+function Event({ date, text }: { date: string; text: string }) {
+  return (
+    <div className="flex gap-3">
+      <span className="w-20 shrink-0 text-xs font-black text-ink/55">
+        {date}
+      </span>
+      <span className="text-sm font-semibold">{text}</span>
+    </div>
+  );
+}
+function SmallCard({
+  title,
+  value,
+  note,
+}: {
+  title: string;
+  value: string;
+  note: string;
+}) {
+  return (
+    <div className="card p-4">
+      <p className="label">{title}</p>
+      <p className="money mt-2 text-2xl font-black">{value}</p>
+      <p className="mt-1 text-xs text-ink/55">{note}</p>
+    </div>
+  );
+}
+function MorePage({ open }: { open: (page: Page) => void }) {
+  const items: [Page, React.ReactNode, string, string][] = [
+    [
+      "calendar",
+      <CalendarDays key="cal" />,
+      "Calendário financeiro",
+      "Vencimentos, receitas e alertas",
+    ],
+    [
+      "weekly",
+      <CalendarDays key="w" />,
+      "Revisão da Semana",
+      "Receitas, gastos e perguntas do casal",
+    ],
+    [
+      "goals",
+      <Target key="g" />,
+      "Metas e reserva",
+      "Meta inicial de R$ 3.000",
+    ],
+    [
+      "cards",
+      <WalletCards key="c" />,
+      "Cartões de crédito",
+      "Faturas e limites dinâmicos",
+    ],
+    ["reports", <BarChart3 key="r" />, "Relatórios", "7 dias a 12 meses"],
+    [
+      "export",
+      <Download key="e" />,
+      "Exportar meus dados",
+      "CSV e backup JSON",
+    ],
+    [
+      "family",
+      <ShieldCheck key="f" />,
+      "Família e segurança",
+      "Convites e membros",
+    ],
+  ];
+  return (
+    <div>
+      <p className="label">Organizar</p>
+      <h2 className="text-3xl font-black">Mais opções</h2>
+      <div className="card mt-5 divide-y divide-ink/10">
+        {items.map(([page, i, t, s]) => (
+          <button
+            key={t}
+            onClick={() => open(page)}
+            className="tap flex w-full items-center gap-4 p-4 text-left"
+          >
+            <span className="grid h-11 w-11 place-items-center rounded-2xl bg-mint">
+              {i}
+            </span>
+            <span className="flex-1">
+              <b className="block">{t}</b>
+              <small className="text-ink/55">{s}</small>
+            </span>
+            <ChevronRight size={18} />
+          </button>
+        ))}
+      </div>
+      <section className="card mt-5 p-5">
+        <p className="label">Patrimônio</p>
+        <div className="mt-3 grid grid-cols-2 gap-4 text-sm">
+          <span>
+            Imóvel estimado
+            <br />
+            <b>{brl(230000)}</b>
+          </span>
+          <span>
+            Financiamento
+            <br />
+            <b>− {brl(146461.55)}</b>
+          </span>
+          <span>
+            Carro (estimado)
+            <br />
+            <b>~ {brl(12000)}</b>
+          </span>
+          <span>
+            FGTS
+            <br />
+            <b>{brl(2274.07)}</b>
+          </span>
+        </div>
+      </section>
+    </div>
+  );
+}
+function RegisterModal({
+  initial,
+  person,
+  cards,
+  categories,
+  onClose,
+  onSave,
+}: {
+  initial: Tx | null;
+  person: string;
+  cards: CardItem[];
+  categories: string[];
+  onClose: () => void;
+  onSave: (t: Tx) => void;
+}) {
+  const [type, setType] = useState<Tx["type"]>(initial?.type ?? "expense");
+  const [category, setCategory] = useState(initial?.category || "Supermercado");
+  const [amount, setAmount] = useState(
+    initial ? initial.amount.toFixed(2).replace(".", ",") : "",
+  );
+  const [description, setDescription] = useState(initial?.description || "");
+  const [date, setDate] = useState(
+    initial?.date || new Date().toISOString().slice(0, 10),
+  );
+  const [cardId, setCardId] = useState(initial?.cardId || "");
+  const [planned, setPlanned] = useState(initial?.planned ?? true);
+  const [more, setMore] = useState(Boolean(initial));
+  const value = useMemo(
+    () => Number(amount.replaceAll(".", "").replace(",", ".")),
+    [amount],
+  );
+  const incomeCategories = [
+    "Salário",
+    "Adiantamento",
+    "Horas extras",
+    "Férias",
+    "13º",
+    "Aluguel recebido",
+    "Renda extra",
+    "Outros",
+  ];
+  function chooseType(next: Tx["type"]) {
+    setType(next);
+    if (next === "income") setCategory("Salário");
+    else if (next === "expense") setCategory("Supermercado");
+    else setCategory("");
+  }
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center bg-ink/45 backdrop-blur-sm sm:items-center sm:p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label={initial ? "Editar lançamento" : "Registrar lançamento"}
+    >
+      <div className="max-h-[94vh] w-full max-w-lg overflow-y-auto rounded-t-[2rem] bg-white p-5 shadow-2xl sm:rounded-[2rem]">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="label">{initial ? "Editar" : "Novo lançamento"}</p>
+            <h2 className="text-2xl font-black">
+              {initial ? "Atualizar movimentação" : "Registrar em segundos"}
+            </h2>
+          </div>
+          <button
+            className="tap focus-ring p-3"
+            onClick={onClose}
+            aria-label="Fechar"
+          >
+            <X />
+          </button>
+        </div>
+        <div className="mt-4 grid grid-cols-2 gap-1 rounded-2xl bg-cream p-1 sm:grid-cols-4">
+          {(
+            [
+              ["expense", "Despesa"],
+              ["income", "Receita"],
+              ["transfer", "Transferência"],
+              ["debt_payment", "Pagar dívida"],
+            ] as [Tx["type"], string][]
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => chooseType(key)}
+              className={`tap rounded-xl px-2 text-xs font-bold ${type === key ? "bg-white shadow" : ""}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {type === "expense" && (
+          <div className="mt-4 flex gap-2 overflow-x-auto pb-2">
+            {quick.map((q) => (
+              <button
+                key={q}
+                onClick={() => setCategory(q)}
+                className={`tap shrink-0 rounded-full border px-4 text-sm font-bold ${category === q ? "border-ink bg-ink text-white" : "border-ink/15"}`}
+              >
+                + {q}
+              </button>
+            ))}
+          </div>
+        )}
+        <label className="mt-4 block">
+          <span className="label">Valor</span>
+          <div className="mt-1 flex items-center rounded-2xl border-2 border-ink/15 px-4 focus-within:border-ink">
+            <span className="text-xl font-black">R$</span>
+            <input
+              autoFocus
+              inputMode="decimal"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              placeholder="0,00"
+              className="money w-full border-0 bg-transparent p-4 text-3xl font-black outline-none"
+            />
+          </div>
+        </label>
+        <div className="mt-4 grid grid-cols-2 gap-3">
+          {(type === "expense" || type === "income") && (
+            <label>
+              <span className="label">Categoria</span>
+              <select
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                className="tap mt-1 w-full rounded-xl border border-ink/15 bg-white px-3"
+              >
+                {(type === "income" ? incomeCategories : categories).map(
+                  (name) => (
+                    <option key={name}>{name}</option>
+                  ),
+                )}
+              </select>
+            </label>
+          )}
+          <label
+            className={
+              type === "transfer" || type === "debt_payment" ? "col-span-2" : ""
+            }
+          >
+            <span className="label">Data</span>
+            <input
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              className="tap mt-1 w-full rounded-xl border border-ink/15 px-3"
+            />
+          </label>
+        </div>
+        {type === "expense" && cards.length > 0 && (
+          <label className="mt-4 block">
+            <span className="label">Forma de pagamento</span>
+            <select
+              value={cardId}
+              onChange={(e) => setCardId(e.target.value)}
+              className="tap mt-1 w-full rounded-xl border bg-white px-3"
+            >
+              <option value="">Dinheiro / débito / Pix</option>
+              {cards.map((card) => (
+                <option key={card.id} value={card.id}>
+                  Cartão {card.name}
+                </option>
+              ))}
+            </select>
+            {cardId && (
+              <small className="mt-1 block text-ink/55">
+                A compra entrará automaticamente na fatura conforme o dia de
+                fechamento.
+              </small>
+            )}
+          </label>
+        )}
+        <label className="mt-4 block">
+          <span className="label">
+            Descrição{" "}
+            {type === "transfer" || type === "debt_payment" ? "" : "(opcional)"}
+          </span>
+          <input
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder={
+              type === "debt_payment"
+                ? "Ex.: parcela Santander"
+                : type === "transfer"
+                  ? "Ex.: Conta para reserva"
+                  : "Ex.: compra da semana"
+            }
+            className="tap mt-1 w-full rounded-xl border border-ink/15 px-3"
+          />
+        </label>
+        <button
+          onClick={() => setMore((v) => !v)}
+          className="tap mt-2 text-sm font-bold"
+        >
+          {more ? "− Ocultar detalhes" : "+ Adicionar detalhes"}
+        </button>
+        {more && (
+          <div className="grid grid-cols-2 gap-3 rounded-2xl bg-cream p-4">
+            <div>
+              <span className="label">Registrado por</span>
+              <p className="mt-2 font-bold">{person}</p>
+            </div>
+            <label>
+              <span className="label">Planejamento</span>
+              <select
+                value={planned ? "yes" : "no"}
+                onChange={(e) => setPlanned(e.target.value === "yes")}
+                className="tap mt-1 w-full rounded-xl bg-white px-3"
+              >
+                <option value="yes">Planejada</option>
+                <option value="no">Não planejada</option>
+              </select>
+            </label>
+          </div>
+        )}
+        <button
+          disabled={
+            !value ||
+            value <= 0 ||
+            !date ||
+            ((type === "transfer" || type === "debt_payment") && !description)
+          }
+          onClick={() =>
+            onSave({
+              id: initial?.id || crypto.randomUUID(),
+              type,
+              amount: value,
+              category,
+              description,
+              person: initial?.person || person,
+              planned,
+              date,
+              cardId: cardId || undefined,
+              cardName: cards.find((c) => c.id === cardId)?.name,
+            })
+          }
+          className="focus-ring tap mt-5 w-full rounded-2xl bg-ink p-4 text-lg font-black text-white disabled:opacity-40"
+        >
+          {initial ? "Salvar alterações" : "Salvar"}
+        </button>
+      </div>
+    </div>
+  );
 }
